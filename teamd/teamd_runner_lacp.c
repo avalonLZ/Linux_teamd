@@ -81,6 +81,14 @@ struct lacpdu {
 	uint8_t			__reserved4[50];
 } __attribute__((__packed__));
 
+static bool ab_status;
+static bool port1_timeout;
+static bool port2_timeout;
+static struct team_port *ab_active_port = NULL;
+static struct teamd_context *ab_ctx;
+
+
+
 static void lacpdu_init(struct lacpdu *lacpdu)
 {
 	memset(lacpdu, 0, sizeof(*lacpdu));
@@ -196,6 +204,40 @@ struct lacp_port {
 #define		LACP_PORT_CFG_DFLT_STICKY false
 	} cfg;
 };
+
+
+static int lacp_carrier_init_ab(struct teamd_context *ctx, struct lacp *lacp)
+{
+	int err;
+
+	/* initialize carrier control */
+	err = team_carrier_set(ctx->th, true);
+	if (err && err != -EOPNOTSUPP) {
+		teamd_log_err("Failed to set carrier down.");
+		return err;
+	}
+
+	lacp->carrier_up = true;
+
+	return 0;
+}
+
+static int lacp_carrier_fini_ab(struct teamd_context *ctx, struct lacp *lacp)
+{
+	int err;
+
+	/* initialize carrier control */
+	err = team_carrier_set(ctx->th, false);
+	if (err && err != -EOPNOTSUPP) {
+		teamd_log_err("Failed to set carrier down.");
+		return err;
+	}
+
+	lacp->carrier_up = false;
+
+	return 0;
+}
+
 
 static struct lacp_port *lacp_port_get(struct lacp *lacp,
 				       struct teamd_port *tdport)
@@ -1024,6 +1066,8 @@ static int lacp_port_link_update(struct lacp_port *lacp_port)
 	uint8_t duplex = team_get_port_duplex(team_port);
 	int err;
 
+    teamd_log_err("******lz1******change link up:%d*************", team_is_port_link_up(team_port));
+
 	if (linkup != lacp_port->__link_last.up ||
 	    duplex != lacp_port->__link_last.duplex) {
 		/* If duplex is 0, meaning half-duplex, it should be set
@@ -1043,6 +1087,33 @@ static int lacp_port_link_update(struct lacp_port *lacp_port)
 	lacp_port->__link_last.up = linkup;
 	lacp_port->__link_last.speed = speed;
 	lacp_port->__link_last.duplex = duplex;
+
+    teamd_log_err("******lz2******change link up:%d*************", team_is_port_link_up(team_port));
+
+    if(ab_status)
+    {
+        if((team_get_port_ifindex(team_port) == team_get_port_ifindex(ab_active_port)) && (!team_is_port_link_up(team_port)))
+        {
+            team_for_each_port(team_port, ab_ctx->th)
+            {
+                if (!team_is_port_link_up(team_port))
+                    continue;
+
+                team_set_port_enabled(ab_ctx->th, team_get_port_ifindex(ab_active_port), false);
+                team_set_port_enabled(ab_ctx->th, team_get_port_ifindex(team_port), true);
+                ab_active_port = team_port;
+                break;
+            }
+            teamd_log_err("************change ab,active iface:%d*************", team_get_port_ifindex(ab_active_port));
+        }
+        else
+        {
+            team_set_port_enabled(ab_ctx->th, team_get_port_ifindex(ab_active_port), true);
+            teamd_log_err("************no change ab,active iface:%d*************", team_get_port_ifindex(ab_active_port));
+        }
+        lacp_carrier_init_ab(ab_ctx, lacp_port->lacp);
+    }
+
 	return 0;
 }
 
